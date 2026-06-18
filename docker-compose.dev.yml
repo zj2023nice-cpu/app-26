@@ -1,0 +1,40 @@
+# ============================================================================
+# Docker Compose 开发环境配置
+# ============================================================================
+# 开发模式特点:
+# 1. 代码热更新(挂载源码目录)
+# 2. 只启动MySQL,应用在本地运行
+#
+# 使用方法: docker-compose -f docker-compose.dev.yml up -d
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # ==================== MySQL 数据库服务 ====================
+  mysql:
+    image: mysql:8.0
+    container_name: campus-trade-mysql-dev
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=campus123
+      - MYSQL_DATABASE=campus_trade
+      - MYSQL_CHARSET=utf8mb4
+      - MYSQL_COLLATION=utf8mb4_unicode_ci
+    volumes:
+      - mysql_dev_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pcampus123"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    restart: unless-stopped
+
+volumes:
+  mysql_dev_data:
+    driver: local

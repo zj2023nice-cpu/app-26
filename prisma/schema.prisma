@@ -1,0 +1,250 @@
+// ============================================================================
+// Prisma Schema - 校园二手交易平台数据库模型定义
+// ============================================================================
+// 这个文件定义了整个系统的数据库结构,包括表结构、字段类型、关联关系
+// Prisma会根据这个文件自动生成TypeScript类型和数据库迁移脚本
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// 枚举定义 - 定义系统中使用的固定选项值
+// ============================================================================
+
+/// 物品类型枚举 - 区分物品是用于出售还是用于互换
+enum ItemType {
+  SELL      // 出售 - 物品将被卖出换取金钱
+  EXCHANGE  // 互换 - 物品将与其他物品进行以物换物
+}
+
+/// 物品状态枚举 - 追踪物品在平台上的生命周期状态
+enum ItemStatus {
+  DRAFT      // 草稿 - 物品信息已创建但未发布,对其他用户不可见
+  ACTIVE     // 上架中 - 物品已发布,可被其他用户浏览和购买/互换
+  RESERVED   // 已预订 - 有进行中的订单或互换请求,暂时不可被其他人操作
+  SOLD       // 已售出 - 交易完成,物品已成功卖出或互换
+  OFF_SHELF  // 已下架 - 用户主动下架,物品对其他用户不可见
+}
+
+/// 订单状态枚举 - 追踪买卖订单的交易流程
+enum OrderStatus {
+  PENDING    // 待确认 - 买家已下单,等待卖家确认
+  CONFIRMED  // 已确认 - 卖家已确认订单,等待线下交易
+  COMPLETED  // 已完成 - 买家确认收货,交易成功结束
+  CANCELLED  // 已取消 - 订单被取消(买家或卖家主动取消)
+}
+
+/// 互换状态枚举 - 追踪以物换物请求的处理流程
+enum ExchangeStatus {
+  PENDING   // 待响应 - 已发起互换请求,等待物品主人回应
+  ACCEPTED  // 已接受 - 物品主人同意互换,等待双方线下完成交换
+  REJECTED  // 已拒绝 - 物品主人拒绝了互换请求
+  COMPLETED // 已完成 - 双方确认互换完成
+}
+
+/// 消息类型枚举 - 区分不同类型的站内消息
+enum MessageType {
+  PRIVATE  // 私信 - 用户之间的私人消息
+  SYSTEM   // 系统通知 - 系统自动发送的通知(如订单状态变更)
+}
+
+// ============================================================================
+// 数据模型定义 - 定义系统中的核心数据表
+// ============================================================================
+
+/// 用户表 - 存储所有注册用户的基本信息
+/// 用户是系统的核心实体,与物品、订单、消息等都有关联
+model User {
+  id          Int      @id @default(autoincrement()) // 用户唯一标识,自增主键
+  studentId   String   @unique @map("student_id")    // 学号,用于登录,必须唯一
+  password    String                                  // 密码,存储bcrypt加密后的哈希值
+  nickname    String                                  // 昵称,显示给其他用户看的名字
+  avatar      String?                                 // 头像URL,可选字段
+  phone       String?                                 // 手机号,可选,用于联系
+  campus      String?                                 // 校区,如"东校区"、"南校区"等
+  creditScore Int      @default(100) @map("credit_score") // 信用分,初始100分,根据交易行为增减
+  createdAt   DateTime @default(now()) @map("created_at") // 注册时间
+  updatedAt   DateTime @updatedAt @map("updated_at")      // 最后更新时间
+
+  // 关联关系 - 一个用户可以有多个物品、订单、消息等
+  items             Item[]     @relation("UserItems")           // 用户发布的所有物品
+  buyOrders         Order[]    @relation("BuyerOrders")         // 作为买家的订单
+  sellOrders        Order[]    @relation("SellerOrders")        // 作为卖家的订单
+  exchangeRequests  Exchange[] @relation("ExchangeRequester")   // 发起的互换请求
+  exchangeReceived  Exchange[] @relation("ExchangeOwner")       // 收到的互换请求
+  sentMessages      Message[]  @relation("SentMessages")        // 发送的消息
+  receivedMessages  Message[]  @relation("ReceivedMessages")    // 收到的消息
+  givenReviews      Review[]   @relation("ReviewFrom")          // 给出的评价
+  receivedReviews   Review[]   @relation("ReviewTo")            // 收到的评价
+  favorites         Favorite[]                                   // 收藏的物品
+
+  @@map("users") // 数据库中的实际表名
+}
+
+/// 分类表 - 物品分类,支持二级分类结构
+/// 例如:一级分类"电子产品",二级分类"手机"、"电脑"等
+model Category {
+  id       Int        @id @default(autoincrement()) // 分类唯一标识
+  name     String                                    // 分类名称,如"电子产品"
+  icon     String?                                   // 分类图标URL,可选
+  sort     Int        @default(0)                    // 排序权重,数字越小越靠前
+  parentId Int?       @map("parent_id")              // 父分类ID,为空表示一级分类
+
+  // 自关联 - 实现分类的层级结构
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+
+  // 与物品的关联
+  items Item[]
+
+  @@map("categories")
+}
+
+/// 物品表 - 存储所有发布的二手物品信息
+/// 这是交易平台的核心数据,包含物品的详细信息和状态
+model Item {
+  id          Int        @id @default(autoincrement()) // 物品唯一标识
+  title       String                                    // 物品标题,简短描述
+  description String     @db.Text                       // 物品详细描述,使用TEXT类型支持长文本
+  price       Decimal    @db.Decimal(10, 2)            // 价格,最多10位数字,2位小数
+  images      String     @db.Text                       // 图片URL列表,JSON格式存储
+  type        ItemType   @default(SELL)                 // 物品类型:出售或互换
+  status      ItemStatus @default(DRAFT)                // 物品状态
+  viewCount   Int        @default(0) @map("view_count") // 浏览次数统计
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  // 外键关联
+  userId     Int      @map("user_id")     // 发布者ID
+  categoryId Int      @map("category_id") // 所属分类ID
+  user       User     @relation("UserItems", fields: [userId], references: [id])
+  category   Category @relation(fields: [categoryId], references: [id])
+
+  // 反向关联
+  orders              Order[]    // 相关的订单
+  exchangesAsRequester Exchange[] @relation("ExchangeRequesterItem") // 作为请求方物品的互换
+  exchangesAsOwner    Exchange[] @relation("ExchangeOwnerItem")      // 作为被请求方物品的互换
+  favorites           Favorite[] // 被收藏记录
+
+  @@index([userId])     // 按用户ID查询的索引
+  @@index([categoryId]) // 按分类查询的索引
+  @@index([status])     // 按状态查询的索引
+  @@index([type])       // 按类型查询的索引
+  @@map("items")
+}
+
+/// 收藏表 - 记录用户收藏的物品
+/// 多对多关系的中间表
+model Favorite {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  itemId    Int      @map("item_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+  item Item @relation(fields: [itemId], references: [id])
+
+  @@unique([userId, itemId]) // 同一用户不能重复收藏同一物品
+  @@map("favorites")
+}
+
+/// 订单表 - 记录买卖交易的订单信息
+/// 当买家决定购买某个物品时,会创建一条订单记录
+model Order {
+  id        Int         @id @default(autoincrement()) // 订单唯一标识
+  orderNo   String      @unique @map("order_no")      // 订单编号,业务唯一标识,格式如:ORD20240119001
+  price     Decimal     @db.Decimal(10, 2)            // 成交价格
+  status    OrderStatus @default(PENDING)              // 订单状态
+  remark    String?     @db.Text                       // 买家备注,可选
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  // 外键关联 - 订单涉及买家、卖家和物品三方
+  buyerId  Int  @map("buyer_id")  // 买家ID
+  sellerId Int  @map("seller_id") // 卖家ID
+  itemId   Int  @map("item_id")   // 物品ID
+  buyer    User @relation("BuyerOrders", fields: [buyerId], references: [id])
+  seller   User @relation("SellerOrders", fields: [sellerId], references: [id])
+  item     Item @relation(fields: [itemId], references: [id])
+
+  // 关联的评价
+  reviews Review[]
+
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([status])
+  @@map("orders")
+}
+
+/// 互换表 - 记录以物换物的请求信息
+/// 当用户想用自己的物品换取他人的物品时,创建互换请求
+model Exchange {
+  id        Int            @id @default(autoincrement()) // 互换请求唯一标识
+  message   String?        @db.Text                       // 互换说明,描述为什么想互换
+  status    ExchangeStatus @default(PENDING)              // 互换状态
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+
+  // 外键关联 - 互换涉及请求者、物品主人,以及双方的物品
+  requesterId     Int  @map("requester_id")      // 请求者ID(发起互换的人)
+  ownerId         Int  @map("owner_id")          // 物品主人ID(被请求的人)
+  requesterItemId Int  @map("requester_item_id") // 请求者提供的物品ID
+  ownerItemId     Int  @map("owner_item_id")     // 物品主人的物品ID(被请求的物品)
+
+  requester     User @relation("ExchangeRequester", fields: [requesterId], references: [id])
+  owner         User @relation("ExchangeOwner", fields: [ownerId], references: [id])
+  requesterItem Item @relation("ExchangeRequesterItem", fields: [requesterItemId], references: [id])
+  ownerItem     Item @relation("ExchangeOwnerItem", fields: [ownerItemId], references: [id])
+
+  @@index([requesterId])
+  @@index([ownerId])
+  @@index([status])
+  @@map("exchanges")
+}
+
+/// 消息表 - 存储用户之间的站内消息和系统通知
+model Message {
+  id         Int         @id @default(autoincrement()) // 消息唯一标识
+  content    String      @db.Text                       // 消息内容
+  type       MessageType @default(PRIVATE)              // 消息类型:私信或系统通知
+  isRead     Boolean     @default(false) @map("is_read") // 是否已读
+  createdAt  DateTime    @default(now()) @map("created_at")
+
+  // 外键关联
+  senderId   Int  @map("sender_id")   // 发送者ID
+  receiverId Int  @map("receiver_id") // 接收者ID
+  sender     User @relation("SentMessages", fields: [senderId], references: [id])
+  receiver   User @relation("ReceivedMessages", fields: [receiverId], references: [id])
+
+  @@index([receiverId, isRead]) // 按接收者和已读状态查询的复合索引
+  @@map("messages")
+}
+
+/// 评价表 - 存储交易完成后的评价信息
+/// 买卖双方可以互相评价,促进平台诚信交易
+model Review {
+  id        Int      @id @default(autoincrement()) // 评价唯一标识
+  rating    Int                                     // 评分:1-5星
+  content   String?  @db.Text                       // 评价内容,可选
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // 外键关联
+  orderId    Int  @map("order_id")     // 关联的订单ID
+  fromUserId Int  @map("from_user_id") // 评价者ID
+  toUserId   Int  @map("to_user_id")   // 被评价者ID
+
+  order    Order @relation(fields: [orderId], references: [id])
+  fromUser User  @relation("ReviewFrom", fields: [fromUserId], references: [id])
+  toUser   User  @relation("ReviewTo", fields: [toUserId], references: [id])
+
+  @@unique([orderId, fromUserId]) // 同一订单中,同一用户只能评价一次
+  @@index([toUserId])             // 按被评价者查询的索引
+  @@map("reviews")
+}

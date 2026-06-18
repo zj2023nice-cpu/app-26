@@ -1,0 +1,97 @@
+# ============================================================================
+# Docker Compose 配置文件 - 一键启动整个应用
+# ============================================================================
+# 这个文件定义了整个应用的服务编排:
+# 1. api - NestJS后端服务
+# 2. mysql - MySQL数据库服务
+#
+# 使用方法: docker-compose up -d
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # ==================== NestJS 后端服务 ====================
+  api:
+    # 使用当前目录的Dockerfile构建镜像
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: campus-trade-api
+    # 端口映射: 宿主机3000 -> 容器3000
+    ports:
+      - "3000:3000"
+    # 环境变量配置
+    environment:
+      # 数据库连接URL
+      # mysql是docker-compose中定义的服务名,Docker会自动解析为容器IP
+      - DATABASE_URL=mysql://root:campus123@mysql:3306/campus_trade
+      # JWT密钥(生产环境请修改为复杂的随机字符串)
+      - JWT_SECRET=campus-trade-jwt-secret-key-2024
+      # JWT过期时间
+      - JWT_EXPIRES_IN=7d
+      # 应用端口
+      - PORT=3000
+      # 运行环境
+      - NODE_ENV=production
+    # 依赖关系: 等待mysql服务健康后再启动
+    depends_on:
+      mysql:
+        condition: service_healthy
+    # 网络配置
+    networks:
+      - campus-network
+    # 重启策略: 除非手动停止,否则总是重启
+    restart: unless-stopped
+
+  # ==================== MySQL 数据库服务 ====================
+  mysql:
+    # 使用官方MySQL 8.0镜像
+    image: mysql:8.0
+    container_name: campus-trade-mysql
+    # 端口映射: 宿主机3306 -> 容器3306
+    # 如果本地已有MySQL运行,可以改为其他端口如 "3307:3306"
+    ports:
+      - "3306:3306"
+    # 环境变量配置
+    environment:
+      # root用户密码
+      - MYSQL_ROOT_PASSWORD=campus123
+      # 自动创建的数据库名
+      - MYSQL_DATABASE=campus_trade
+      # 字符集设置(支持中文和emoji)
+      - MYSQL_CHARSET=utf8mb4
+      - MYSQL_COLLATION=utf8mb4_unicode_ci
+    # 数据持久化: 使用命名卷存储数据
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # 可选: 挂载初始化SQL脚本
+      # - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    # 健康检查: 确保MySQL完全启动后再让api服务连接
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pcampus123"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # MySQL配置命令
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    # 网络配置
+    networks:
+      - campus-network
+    # 重启策略
+    restart: unless-stopped
+
+# ==================== 网络配置 ====================
+networks:
+  campus-network:
+    driver: bridge
+
+# ==================== 数据卷配置 ====================
+# 命名卷用于持久化MySQL数据,即使容器删除数据也不会丢失
+volumes:
+  mysql_data:
+    driver: local
